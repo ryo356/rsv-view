@@ -50,19 +50,42 @@
 
   <div class="gridwrap" id="wrap"></div>
   <div class="legend">※ 予約クリックでの「予約操作」までは再現していません（表示専用）。</div>
-
 <script>
-const GAS_URL = "https://script.google.com/macros/s/AKfycbwwxdG-A2q3B0FCZZLl3b_bWN4tdT4UCqIUFRjJj8ZCNExco_FpmntWxVsdb8PJH_Gb1A/exec";
+const GAS_URL = "あなたの/exec URLをここ（今のやつでOK）";
 
 let currentYmd = null;
 
+// ---------- 日付ユーティリティ ----------
+function ymdToDate(ymd){
+  const y = parseInt(ymd.slice(0,4),10);
+  const m = parseInt(ymd.slice(4,6),10)-1;
+  const d = parseInt(ymd.slice(6,8),10);
+  return new Date(y,m,d);
+}
+function dateToYmd(dt){
+  const y = String(dt.getFullYear()).padStart(4,"0");
+  const m = String(dt.getMonth()+1).padStart(2,"0");
+  const d = String(dt.getDate()).padStart(2,"0");
+  return y+m+d;
+}
+function addDaysYmd(ymd, delta){
+  const dt = ymdToDate(ymd);
+  dt.setDate(dt.getDate()+delta);
+  return dateToYmd(dt);
+}
+function weekdayJa(ymd){
+  const w = ["日","月","火","水","木","金","土"];
+  return w[ymdToDate(ymd).getDay()];
+}
+function ymdLabel(ymd){
+  if(!ymd || ymd.length !== 8) return "-";
+  return `${ymd.slice(0,4)}/${ymd.slice(4,6)}/${ymd.slice(6,8)}（${weekdayJa(ymd)}）`;
+}
+
+// ---------- 時間 ----------
 function hhmm(s){
   if(!s || s.length !== 4) return s;
   return s.slice(0,2)+":"+s.slice(2);
-}
-function ymdLabel(ymd){
-  if(!ymd || ymd.length !== 8) return ymd || "-";
-  return `${ymd.slice(0,4)}/${ymd.slice(4,6)}/${ymd.slice(6,8)}`;
 }
 function toMin(hhmmStr){
   const h = parseInt(hhmmStr.slice(0,2),10);
@@ -70,15 +93,15 @@ function toMin(hhmmStr){
   return h*60+m;
 }
 
-async function fetchData(params){
+// ---------- 通信 ----------
+async function fetchByDate(ymd){
   const url = new URL(GAS_URL);
-  if(params){
-    Object.entries(params).forEach(([k,v]) => url.searchParams.set(k,v));
-  }
+  url.searchParams.set("date", ymd);
   const res = await fetch(url.toString(), { cache:"no-store" });
   return await res.json();
 }
 
+// ---------- 描画（刻み30分のまま） ----------
 function buildGrid(data){
   const info = data.timetableInfo;
   const rooms = info.shisetsuInfo || [];
@@ -87,11 +110,10 @@ function buildGrid(data){
 
   const beg = param.rsvBegTime || "0900";
   const end = param.rsvEndTime || "2100";
-  const step = 30; // 見やすさ優先：30分刻み（元サイトはもっと細かい可能性あり）
+  const step = 30; // ←刻みは現状維持
   const begMin = toMin(beg);
   const endMin = toMin(end);
 
-  // 時間列を作る
   const cols = [];
   for(let t=begMin; t<endMin; t+=step){
     const h = String(Math.floor(t/60)).padStart(2,"0");
@@ -99,14 +121,10 @@ function buildGrid(data){
     cols.push(h+m);
   }
 
-  // 表ヘッダ
-  let html = `<table><thead><tr><th class="room">施設名称</th>`;
-  for(const c of cols){
-    html += `<th>${hhmm(c)}</th>`;
-  }
+  let html = `<div class="gridwrap"><table><thead><tr><th class="room">施設名称</th>`;
+  for(const c of cols) html += `<th>${hhmm(c)}</th>`;
   html += `</tr></thead><tbody>`;
 
-  // 行（施設）
   for(const r of rooms){
     const roomcd = r.roomcd;
     const roomnm = r.roomnm;
@@ -114,67 +132,81 @@ function buildGrid(data){
 
     html += `<tr><td class="room">${roomnm}<div style="opacity:.65;font-weight:400">${hhmm(r.frtm)}–${hhmm(r.totm)} / 定員 ${r.maxusrcnt}</div></td>`;
 
-    // 各セル
     for(let i=0;i<cols.length;i++){
-      html += `<td><div class="slot" data-room="${roomcd}" data-col="${cols[i]}"></div></td>`;
+      html += `<td><div class="slot" data-room="${roomcd}" data-idx="${i}"></div></td>`;
     }
     html += `</tr>`;
 
-    // 予約ブロック（absoluteでセル上に描く）
-    // ざっくり：開始列〜終了列の範囲を計算して、開始セルに横幅を持たせて描画
-    // ※ 30分刻みなので、見え方は「ほぼ元サイト風」
+    // ブロック配置（開始セルに横長ブロックとして置く）
     setTimeout(() => {
+      const rowSlots = Array.from(document.querySelectorAll(`.slot[data-room="${roomcd}"]`));
       for(const x of list){
         const st = toMin(x.intm);
         const ed = toMin(x.outtm);
         const stIdx = Math.max(0, Math.floor((st - begMin) / step));
         const edIdx = Math.min(cols.length, Math.ceil((ed - begMin) / step));
-
-        const rowSlots = Array.from(document.querySelectorAll(`.slot[data-room="${roomcd}"]`));
         if(!rowSlots[stIdx]) continue;
 
-        const startEl = rowSlots[stIdx];
         const span = Math.max(1, edIdx - stIdx);
+        const startEl = rowSlots[stIdx];
 
         const block = document.createElement("div");
         block.className = "block";
         block.textContent = `${hhmm(x.intm)}–${hhmm(x.outtm)}`;
-        // 横幅は「セル幅×span - ちょい余白」
-        const cell = startEl.closest("td");
-        const cellW = cell.getBoundingClientRect().width;
+
+        // span分の横幅を「右方向に伸ばす」簡易実装
+        const cellW = startEl.closest("td").getBoundingClientRect().width;
         block.style.left = "2px";
-        block.style.right = `-${(span-1)*cellW - 4}px`;
+        block.style.width = `${Math.max(1, span) * cellW - 6}px`;
+
         startEl.appendChild(block);
       }
     }, 0);
   }
 
-  html += `</tbody></table>`;
+  html += `</tbody></table></div>`;
   document.getElementById("wrap").innerHTML = html;
 }
 
-async function load(params){
+// ---------- ロード ----------
+async function loadDate(ymd){
   const meta = document.getElementById("meta");
   meta.textContent = "読み込み中…";
 
-  const data = await fetchData(params);
+  const data = await fetchByDate(ymd);
   if(!data.ok){
     meta.textContent = "取得失敗: " + (data.error || "unknown");
     return;
   }
 
-  currentYmd = data.date || null;
+  currentYmd = data.date || ymd;
   document.getElementById("dispDate").textContent = ymdLabel(currentYmd);
-  meta.textContent = "更新: " + new Date(data.fetchedAt).toLocaleString("ja-JP");
 
+  meta.textContent = "更新: " + new Date(data.fetchedAt).toLocaleString("ja-JP");
   buildGrid(data);
 }
 
-// ボタン：元サイトと同じ offset で動かす
-document.getElementById("today").onclick   = () => load({ offset: "0" });
-document.getElementById("nextDay").onclick = () => load({ offset: "1" });
-document.getElementById("prevDay").onclick = () => load({ offset: "-1" });
-document.getElementById("nextWeek").onclick= () => load({ offset: "7" });
+// ---------- ボタン ----------
+document.getElementById("today").onclick = () => {
+  const now = new Date();
+  const ymd = dateToYmd(now);
+  loadDate(ymd);
+};
+
+document.getElementById("nextDay").onclick = () => {
+  if(!currentYmd) return;
+  loadDate(addDaysYmd(currentYmd, 1));
+};
+
+document.getElementById("prevDay").onclick = () => {
+  if(!currentYmd) return;
+  loadDate(addDaysYmd(currentYmd, -1));
+};
+
+document.getElementById("nextWeek").onclick = () => {
+  if(!currentYmd) return;
+  loadDate(addDaysYmd(currentYmd, 7));
+};
 
 document.getElementById("go").onclick = () => {
   const v = document.getElementById("pick").value.trim();
@@ -182,11 +214,14 @@ document.getElementById("go").onclick = () => {
     alert("YYYYMMDD（例: 20260205）で入れてね");
     return;
   }
-  load({ date: v });
+  loadDate(v);
 };
 
-// 初回ロード：本日
-load({ offset: "0" });
+// 初回表示＝本日
+(() => {
+  const now = new Date();
+  loadDate(dateToYmd(now));
+})();
 </script>
 </body>
 </html>
