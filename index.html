@@ -94,12 +94,31 @@ function toMin(hhmmStr){
 }
 
 // ---------- 通信 ----------
-async function fetchByDate(ymd){
-  const url = new URL(GAS_URL);
-  url.searchParams.set("date", ymd);
-  const res = await fetch(url.toString(), { cache:"no-store" });
-  return await res.json();
+function fetchByDate(ymd){
+  return new Promise((resolve) => {
+    const cbName = "cb_" + Math.random().toString(36).slice(2);
+    window[cbName] = (data) => {
+      try { resolve(data); } finally {
+        delete window[cbName];
+        script.remove();
+      }
+    };
+
+    const url = new URL(GAS_URL);
+    url.searchParams.set("date", ymd);
+    url.searchParams.set("callback", cbName);
+
+    const script = document.createElement("script");
+    script.src = url.toString();
+    script.onerror = () => {
+      resolve({ ok:false, error:"jsonp load failed" });
+      delete window[cbName];
+      script.remove();
+    };
+    document.body.appendChild(script);
+  });
 }
+
 
 // ---------- 描画（刻み30分のまま） ----------
 function buildGrid(data){
