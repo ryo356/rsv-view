@@ -6,66 +6,187 @@
   <title>施設予約状況</title>
   <style>
     body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;margin:12px;}
-    .meta{opacity:.75;font-size:12px;margin-bottom:8px}
-    table{border-collapse:collapse;width:100%;}
-    th,td{border:1px solid #ddd;padding:8px;font-size:14px;vertical-align:top}
-    th{background:#f6f6f6;text-align:left;white-space:nowrap}
-    .room{font-weight:700}
-    .slot{margin:4px 0;padding:6px;border-radius:8px;background:#fafafa}
-    .time{font-variant-numeric:tabular-nums}
+    .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
+    .btn{padding:6px 10px;border:1px solid #ccc;border-radius:10px;background:#fff;cursor:pointer}
+    .btn:disabled{opacity:.5;cursor:not-allowed}
+    .meta{opacity:.7;font-size:12px}
+    .date{font-weight:700}
+    .gridwrap{overflow:auto;border:1px solid #ddd;border-radius:12px}
+    table{border-collapse:separate;border-spacing:0;min-width:900px;width:100%}
+    th,td{border-bottom:1px solid #eee;border-right:1px solid #eee;padding:6px;font-size:12px;white-space:nowrap}
+    th{position:sticky;top:0;background:#f7f7f7;z-index:2}
+    th.room{left:0;z-index:3}
+    td.room{position:sticky;left:0;background:#fff;z-index:1;font-weight:700}
+    .slot{height:26px; position:relative}
+    .block{
+      position:absolute; top:3px; bottom:3px;
+      border-radius:10px; background:#e9eefc; border:1px solid #c8d6ff;
+      display:flex; align-items:center; padding:0 8px; overflow:hidden; text-overflow:ellipsis;
+      font-size:12px;
+    }
+    .legend{margin-top:8px;font-size:12px;opacity:.75}
+    input[type="text"]{padding:6px 10px;border:1px solid #ccc;border-radius:10px;width:120px}
   </style>
 </head>
 <body>
   <h2>施設予約状況</h2>
+
+  <div class="bar">
+    <button class="btn" id="prevDay">＜前日</button>
+    <button class="btn" id="today">本日</button>
+    <button class="btn" id="nextDay">翌日＞</button>
+    <button class="btn" id="nextWeek">翌週＞＞</button>
+
+    <span class="date" id="dispDate">-</span>
+
+    <span style="margin-left:auto;display:flex;gap:8px;align-items:center">
+      <span>指定日(YYYYMMDD)</span>
+      <input id="pick" type="text" placeholder="20260205" />
+      <button class="btn" id="go">検索</button>
+    </span>
+  </div>
+
   <div class="meta" id="meta">読み込み中…</div>
-  <div id="out"></div>
+
+  <div class="gridwrap" id="wrap"></div>
+  <div class="legend">※ 予約クリックでの「予約操作」までは再現していません（表示専用）。</div>
 
 <script>
 const GAS_URL = "https://script.google.com/macros/s/AKfycbwwxdG-A2q3B0FCZZLl3b_bWN4tdT4UCqIUFRjJj8ZCNExco_FpmntWxVsdb8PJH_Gb1A/exec";
+
+let currentYmd = null;
 
 function hhmm(s){
   if(!s || s.length !== 4) return s;
   return s.slice(0,2)+":"+s.slice(2);
 }
+function ymdLabel(ymd){
+  if(!ymd || ymd.length !== 8) return ymd || "-";
+  return `${ymd.slice(0,4)}/${ymd.slice(4,6)}/${ymd.slice(6,8)}`;
+}
+function toMin(hhmmStr){
+  const h = parseInt(hhmmStr.slice(0,2),10);
+  const m = parseInt(hhmmStr.slice(2),10);
+  return h*60+m;
+}
 
-(async () => {
+async function fetchData(params){
+  const url = new URL(GAS_URL);
+  if(params){
+    Object.entries(params).forEach(([k,v]) => url.searchParams.set(k,v));
+  }
+  const res = await fetch(url.toString(), { cache:"no-store" });
+  return await res.json();
+}
+
+function buildGrid(data){
+  const info = data.timetableInfo;
+  const rooms = info.shisetsuInfo || [];
+  const reserves = info.reserveInfo || {};
+  const param = info.param || {};
+
+  const beg = param.rsvBegTime || "0900";
+  const end = param.rsvEndTime || "2100";
+  const step = 30; // 見やすさ優先：30分刻み（元サイトはもっと細かい可能性あり）
+  const begMin = toMin(beg);
+  const endMin = toMin(end);
+
+  // 時間列を作る
+  const cols = [];
+  for(let t=begMin; t<endMin; t+=step){
+    const h = String(Math.floor(t/60)).padStart(2,"0");
+    const m = String(t%60).padStart(2,"0");
+    cols.push(h+m);
+  }
+
+  // 表ヘッダ
+  let html = `<table><thead><tr><th class="room">施設名称</th>`;
+  for(const c of cols){
+    html += `<th>${hhmm(c)}</th>`;
+  }
+  html += `</tr></thead><tbody>`;
+
+  // 行（施設）
+  for(const r of rooms){
+    const roomcd = r.roomcd;
+    const roomnm = r.roomnm;
+    const list = reserves[roomcd] || [];
+
+    html += `<tr><td class="room">${roomnm}<div style="opacity:.65;font-weight:400">${hhmm(r.frtm)}–${hhmm(r.totm)} / 定員 ${r.maxusrcnt}</div></td>`;
+
+    // 各セル
+    for(let i=0;i<cols.length;i++){
+      html += `<td><div class="slot" data-room="${roomcd}" data-col="${cols[i]}"></div></td>`;
+    }
+    html += `</tr>`;
+
+    // 予約ブロック（absoluteでセル上に描く）
+    // ざっくり：開始列〜終了列の範囲を計算して、開始セルに横幅を持たせて描画
+    // ※ 30分刻みなので、見え方は「ほぼ元サイト風」
+    setTimeout(() => {
+      for(const x of list){
+        const st = toMin(x.intm);
+        const ed = toMin(x.outtm);
+        const stIdx = Math.max(0, Math.floor((st - begMin) / step));
+        const edIdx = Math.min(cols.length, Math.ceil((ed - begMin) / step));
+
+        const rowSlots = Array.from(document.querySelectorAll(`.slot[data-room="${roomcd}"]`));
+        if(!rowSlots[stIdx]) continue;
+
+        const startEl = rowSlots[stIdx];
+        const span = Math.max(1, edIdx - stIdx);
+
+        const block = document.createElement("div");
+        block.className = "block";
+        block.textContent = `${hhmm(x.intm)}–${hhmm(x.outtm)}`;
+        // 横幅は「セル幅×span - ちょい余白」
+        const cell = startEl.closest("td");
+        const cellW = cell.getBoundingClientRect().width;
+        block.style.left = "2px";
+        block.style.right = `-${(span-1)*cellW - 4}px`;
+        startEl.appendChild(block);
+      }
+    }, 0);
+  }
+
+  html += `</tbody></table>`;
+  document.getElementById("wrap").innerHTML = html;
+}
+
+async function load(params){
   const meta = document.getElementById("meta");
-  const out  = document.getElementById("out");
+  meta.textContent = "読み込み中…";
 
-  const res = await fetch(GAS_URL, { cache: "no-store" });
-  const data = await res.json();
-
+  const data = await fetchData(params);
   if(!data.ok){
     meta.textContent = "取得失敗: " + (data.error || "unknown");
     return;
   }
 
-  const info = data.timetableInfo;
-  const rooms = info.shisetsuInfo || [];
-  const reserves = (info.reserveInfo || {});
-
+  currentYmd = data.date || null;
+  document.getElementById("dispDate").textContent = ymdLabel(currentYmd);
   meta.textContent = "更新: " + new Date(data.fetchedAt).toLocaleString("ja-JP");
 
-  let html = `<table><thead><tr><th>施設</th><th>予約状況（簡易）</th></tr></thead><tbody>`;
-  for(const r of rooms){
-    const roomcd = r.roomcd;
-    const roomnm = r.roomnm;
-    const list = reserves[roomcd] || [];
-    html += `<tr>
-      <td class="room">${roomnm}<div style="opacity:.7;font-size:12px">(${hhmm(r.frtm)}–${hhmm(r.totm)}) / 定員 ${r.maxusrcnt}</div></td>
-      <td>
-        ${list.length ? list.map(x => `
-          <div class="slot">
-            <span class="time">${hhmm(x.intm)}–${hhmm(x.outtm)}</span>
-            ${x.usernm ? ` / ${x.usernm}` : ``}
-          </div>
-        `).join("") : `<span style="opacity:.7">予約なし</span>`}
-      </td>
-    </tr>`;
+  buildGrid(data);
+}
+
+// ボタン：元サイトと同じ offset で動かす
+document.getElementById("today").onclick   = () => load({ offset: "0" });
+document.getElementById("nextDay").onclick = () => load({ offset: "1" });
+document.getElementById("prevDay").onclick = () => load({ offset: "-1" });
+document.getElementById("nextWeek").onclick= () => load({ offset: "7" });
+
+document.getElementById("go").onclick = () => {
+  const v = document.getElementById("pick").value.trim();
+  if(!/^\d{8}$/.test(v)){
+    alert("YYYYMMDD（例: 20260205）で入れてね");
+    return;
   }
-  html += `</tbody></table>`;
-  out.innerHTML = html;
-})();
+  load({ date: v });
+};
+
+// 初回ロード：本日
+load({ offset: "0" });
 </script>
 </body>
 </html>
