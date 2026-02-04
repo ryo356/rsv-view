@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>施設予約状況</title>
+  <style>
+    body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;margin:12px;}
+    .meta{opacity:.75;font-size:12px;margin-bottom:8px}
+    table{border-collapse:collapse;width:100%;}
+    th,td{border:1px solid #ddd;padding:8px;font-size:14px;vertical-align:top}
+    th{background:#f6f6f6;text-align:left;white-space:nowrap}
+    .room{font-weight:700}
+    .slot{margin:4px 0;padding:6px;border-radius:8px;background:#fafafa}
+    .time{font-variant-numeric:tabular-nums}
+  </style>
+</head>
+<body>
+  <h2>施設予約状況</h2>
+  <div class="meta" id="meta">読み込み中…</div>
+  <div id="out"></div>
+
+<script>
+const GAS_URL = "https://script.google.com/macros/s/AKfycbwwxdG-A2q3B0FCZZLl3b_bWN4tdT4UCqIUFRjJj8ZCNExco_FpmntWxVsdb8PJH_Gb1A/exec";
+
+function hhmm(s){
+  if(!s || s.length !== 4) return s;
+  return s.slice(0,2)+":"+s.slice(2);
+}
+
+(async () => {
+  const meta = document.getElementById("meta");
+  const out  = document.getElementById("out");
+
+  const res = await fetch(GAS_URL, { cache: "no-store" });
+  const data = await res.json();
+
+  if(!data.ok){
+    meta.textContent = "取得失敗: " + (data.error || "unknown");
+    return;
+  }
+
+  const info = data.timetableInfo;
+  const rooms = info.shisetsuInfo || [];
+  const reserves = (info.reserveInfo || {});
+
+  meta.textContent = "更新: " + new Date(data.fetchedAt).toLocaleString("ja-JP");
+
+  let html = `<table><thead><tr><th>施設</th><th>予約状況（簡易）</th></tr></thead><tbody>`;
+  for(const r of rooms){
+    const roomcd = r.roomcd;
+    const roomnm = r.roomnm;
+    const list = reserves[roomcd] || [];
+    html += `<tr>
+      <td class="room">${roomnm}<div style="opacity:.7;font-size:12px">(${hhmm(r.frtm)}–${hhmm(r.totm)}) / 定員 ${r.maxusrcnt}</div></td>
+      <td>
+        ${list.length ? list.map(x => `
+          <div class="slot">
+            <span class="time">${hhmm(x.intm)}–${hhmm(x.outtm)}</span>
+            ${x.usernm ? ` / ${x.usernm}` : ``}
+          </div>
+        `).join("") : `<span style="opacity:.7">予約なし</span>`}
+      </td>
+    </tr>`;
+  }
+  html += `</tbody></table>`;
+  out.innerHTML = html;
+})();
+</script>
+</body>
+</html>
